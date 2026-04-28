@@ -214,7 +214,10 @@ def process_excel_data(uploaded_file):
     """
     try:
         file_name = getattr(uploaded_file, "name", "").lower()
-        engines = ["openpyxl", "xlrd"] if file_name.endswith(".xlsx") else ["xlrd", "openpyxl"]
+        if file_name.endswith(".xls"):
+            engines = ["calamine", "xlrd", "openpyxl"]
+        else:
+            engines = ["calamine", "openpyxl", "xlrd"]
         read_errors = []
         raw_df = None
 

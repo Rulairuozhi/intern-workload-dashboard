@@ -10,6 +10,10 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import io
+import re
+import zipfile
+import xml.etree.ElementTree as ET
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -40,6 +44,7 @@ SUCCESS = "#2DBE9F"
 SUCCESS_SOFT = "#DDF7F1"
 AMBER = "#F5B84B"
 AMBER_DARK = "#D97706"
+APP_VERSION = "2026-04-28-excel-fallback-v2"
 
 # Custom CSS for a clean dashboard UI
 st.markdown("""
@@ -207,6 +212,102 @@ st.markdown("""
 # DATA PROCESSING FUNCTIONS
 # ============================================================================
 
+
+def _xlsx_column_index(cell_ref):
+    """Convert an Excel cell reference such as A1 or AB12 to a zero-based column index."""
+    letters = re.match(r"[A-Z]+", cell_ref.upper())
+    if not letters:
+        return 0
+
+    index = 0
+    for letter in letters.group(0):
+        index = index * 26 + (ord(letter) - ord("A") + 1)
+    return index - 1
+
+
+def _cell_text(cell, shared_strings, namespaces):
+    """Read a cell value directly from xlsx XML, tolerating invalid Excel error values."""
+    cell_type = cell.attrib.get("t")
+
+    if cell_type == "inlineStr":
+        return "".join(text.text or "" for text in cell.findall(".//main:t", namespaces)).strip()
+
+    value_node = cell.find("main:v", namespaces)
+    if value_node is None or value_node.text is None:
+        return None
+
+    raw_value = value_node.text.strip()
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw_value)]
+        except (ValueError, IndexError):
+            return raw_value
+    if cell_type == "b":
+        return raw_value == "1"
+    if cell_type == "e":
+        return None
+
+    try:
+        number = float(raw_value)
+        return int(number) if number.is_integer() else number
+    except ValueError:
+        return raw_value
+
+
+def read_xlsx_xml_fallback(uploaded_file):
+    """Read a simple worksheet by parsing xlsx XML when standard Excel engines fail."""
+    uploaded_file.seek(0)
+    with zipfile.ZipFile(io.BytesIO(uploaded_file.read())) as workbook:
+        namespaces = {
+            "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            "rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+            "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",
+        }
+
+        shared_strings = []
+        if "xl/sharedStrings.xml" in workbook.namelist():
+            shared_root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+            for item in shared_root.findall("main:si", namespaces):
+                shared_strings.append("".join(text.text or "" for text in item.findall(".//main:t", namespaces)))
+
+        worksheet_path = "xl/worksheets/sheet1.xml"
+        if "xl/workbook.xml" in workbook.namelist() and "xl/_rels/workbook.xml.rels" in workbook.namelist():
+            workbook_root = ET.fromstring(workbook.read("xl/workbook.xml"))
+            first_sheet = workbook_root.find("main:sheets/main:sheet", namespaces)
+            if first_sheet is not None:
+                relationship_id = first_sheet.attrib.get(
+                    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+                )
+                relationships_root = ET.fromstring(workbook.read("xl/_rels/workbook.xml.rels"))
+                for relationship in relationships_root.findall("pkgrel:Relationship", namespaces):
+                    if relationship.attrib.get("Id") == relationship_id:
+                        target = relationship.attrib.get("Target", "worksheets/sheet1.xml")
+                        worksheet_path = f"xl/{target.lstrip('/')}"
+                        break
+
+        sheet_root = ET.fromstring(workbook.read(worksheet_path))
+        rows = []
+        for row in sheet_root.findall(".//main:sheetData/main:row", namespaces):
+            values = []
+            for cell in row.findall("main:c", namespaces):
+                cell_ref = cell.attrib.get("r", "")
+                column_index = _xlsx_column_index(cell_ref)
+                while len(values) <= column_index:
+                    values.append(None)
+                values[column_index] = _cell_text(cell, shared_strings, namespaces)
+
+            if any(value not in (None, "") for value in values):
+                rows.append(values)
+
+    if not rows:
+        raise ValueError("The workbook does not contain readable rows.")
+
+    width = max(len(row) for row in rows)
+    normalized_rows = [row + [None] * (width - len(row)) for row in rows]
+    headers = [str(header).strip() if header is not None else f"Column_{idx + 1}" for idx, header in enumerate(normalized_rows[0])]
+    return pd.DataFrame(normalized_rows[1:], columns=headers)
+
+
 @st.cache_data
 def process_excel_data(uploaded_file):
     """
@@ -228,6 +329,12 @@ def process_excel_data(uploaded_file):
                 break
             except Exception as read_error:
                 read_errors.append(f"{engine}: {read_error}")
+
+        if raw_df is None and file_name.endswith(".xlsx"):
+            try:
+                raw_df = read_xlsx_xml_fallback(uploaded_file)
+            except Exception as fallback_error:
+                read_errors.append(f"xml fallback: {fallback_error}")
 
         if raw_df is None:
             raise ValueError(
@@ -377,6 +484,7 @@ st.markdown('<div class="header-subtitle">A compact view of weekly workload, pre
 # SIDEBAR
 with st.sidebar:
     st.header("Settings")
+    st.caption(f"Build {APP_VERSION}")
     
     uploaded_file = st.file_uploader(
         "Upload Excel File",

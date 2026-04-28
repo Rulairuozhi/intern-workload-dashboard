@@ -44,7 +44,7 @@ SUCCESS = "#2DBE9F"
 SUCCESS_SOFT = "#DDF7F1"
 AMBER = "#F5B84B"
 AMBER_DARK = "#D97706"
-APP_VERSION = "2026-04-28-excel-fallback-v2"
+APP_VERSION = "2026-04-28-pandas-week-fix-v3"
 
 # Custom CSS for a clean dashboard UI
 st.markdown("""
@@ -385,7 +385,9 @@ def process_excel_data(uploaded_file):
         
         # Remove NaN hours
         df_long = df_long.dropna(subset=['Hours'])
-        df_long['Week'] = pd.to_numeric(df_long['Week'], errors='ignore')
+        week_numbers = pd.to_numeric(df_long['Week'], errors='coerce')
+        if week_numbers.notna().all():
+            df_long['Week'] = week_numbers.astype(int)
         
         return df_long.reset_index(drop=True)
         

@@ -213,19 +213,33 @@ def process_excel_data(uploaded_file):
     Process Excel file from wide to long format and add Status field.
     """
     try:
-        raw_df = pd.read_excel(uploaded_file)
+        file_name = getattr(uploaded_file, "name", "").lower()
+        engine = "xlrd" if file_name.endswith(".xls") else "openpyxl"
+        uploaded_file.seek(0)
+        raw_df = pd.read_excel(uploaded_file, engine=engine)
+        raw_df.columns = [str(col).strip() for col in raw_df.columns]
         
         # Validate required columns
         required_cols = ['Week', 'Date']
         if not all(col in raw_df.columns for col in required_cols):
-            raise ValueError(f"Excel must contain columns: {required_cols}")
+            available_cols = ", ".join(raw_df.columns.astype(str))
+            raise ValueError(
+                f"Excel must contain columns: {required_cols}. "
+                f"Found columns: {available_cols}"
+            )
         
         # Define department columns
         dept_cols = ['PPM1', 'DP', 'PPM2', 'STA', 'PEH', 'IP1', 'IP2']
         available_depts = [col for col in dept_cols if col in raw_df.columns]
         
         if not available_depts:
-            raise ValueError(f"Excel must contain at least one department column")
+            available_depts = [
+                col for col in raw_df.columns
+                if col not in required_cols and not col.startswith("Unnamed")
+            ]
+
+        if not available_depts:
+            raise ValueError("Excel must contain at least one department column")
         
         # Convert wide to long format
         df_long = raw_df.melt(

@@ -214,9 +214,25 @@ def process_excel_data(uploaded_file):
     """
     try:
         file_name = getattr(uploaded_file, "name", "").lower()
-        engine = "xlrd" if file_name.endswith(".xls") else "openpyxl"
-        uploaded_file.seek(0)
-        raw_df = pd.read_excel(uploaded_file, engine=engine)
+        engines = ["openpyxl", "xlrd"] if file_name.endswith(".xlsx") else ["xlrd", "openpyxl"]
+        read_errors = []
+        raw_df = None
+
+        for engine in engines:
+            try:
+                uploaded_file.seek(0)
+                raw_df = pd.read_excel(uploaded_file, engine=engine)
+                break
+            except Exception as read_error:
+                read_errors.append(f"{engine}: {read_error}")
+
+        if raw_df is None:
+            raise ValueError(
+                "Could not read this Excel file. "
+                "Please save it again as .xlsx and upload it. "
+                f"Reader errors: {' | '.join(read_errors)}"
+            )
+
         raw_df.columns = [str(col).strip() for col in raw_df.columns]
         
         # Validate required columns
